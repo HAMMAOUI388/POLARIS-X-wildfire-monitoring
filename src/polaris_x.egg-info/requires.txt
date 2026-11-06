@@ -1,0 +1,7 @@
+alembic<2,>=1.13
+geoalchemy2<1,>=0.15
+psycopg[binary]<4,>=3.1
+sqlalchemy<3,>=2.0
+
+[dev]
+pytest<9,>=8
