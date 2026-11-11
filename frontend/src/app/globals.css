@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #f7f8f4; color: #142a29; font-family: Arial, Helvetica, sans-serif; }
+button, input, select, textarea { font: inherit; }
+.maplibregl-map { font-family: Arial, Helvetica, sans-serif; }
+.maplibregl-ctrl-attrib { font-size: 10px; }
+.map-pin { width: 18px; height: 18px; border-radius: 999px; border: 3px solid white; box-shadow: 0 2px 8px #183d3580; cursor: pointer; }
+.map-pin.location { background: #176b58; width: 22px; height: 22px; }
+.map-pin.observation { background: #e8754d; }
+.map-pin.event { background: #7a5ae0; width: 21px; height: 21px; }
+.map-popup { color: #142a29; font-size: 12px; line-height: 1.5; }
+.map-popup strong { font-size: 13px; }

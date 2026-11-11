@@ -3,7 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from uuid import UUID, uuid4
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum as SAEnum, ForeignKey, Index, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Enum as SAEnum, ForeignKey, Index, Numeric, SmallInteger, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from geoalchemy2 import Geography
@@ -14,7 +14,7 @@ class LocationType(str, Enum):
 class Severity(str, Enum):
     low = "low"; moderate = "moderate"; high = "high"; critical = "critical"
 class SensorKind(str, Enum):
-    bme280 = "bme280"; anemometer = "anemometer"; wind_vane = "wind_vane"; pms5003 = "pms5003"; mq2 = "mq2"; soil_moisture = "soil_moisture"; other = "other"
+    bme280 = "bme280"; anemometer = "anemometer"; wind_vane = "wind_vane"; pms5003 = "pms5003"; mq2 = "mq2"; soil_moisture = "soil_moisture"; battery = "battery"; other = "other"
 
 def id_col(): return mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
 def created_col(): return mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -105,21 +105,102 @@ class WeatherObservation(Base):
     id: Mapped[UUID] = id_col(); source_id: Mapped[UUID] = mapped_column(ForeignKey("data_sources.id", ondelete="RESTRICT"), nullable=False); location_id: Mapped[UUID | None] = mapped_column(ForeignKey("monitoring_locations.id", ondelete="SET NULL")); observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False); variables: Mapped[dict] = mapped_column(JSONB, nullable=False); raw_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
 class WeatherForecast(Base):
     __tablename__ = "weather_forecasts"
-    id: Mapped[UUID] = id_col(); source_id: Mapped[UUID] = mapped_column(ForeignKey("data_sources.id", ondelete="RESTRICT"), nullable=False); location_id: Mapped[UUID | None] = mapped_column(ForeignKey("monitoring_locations.id", ondelete="SET NULL")); issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False); valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False); valid_to: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False); variables: Mapped[dict] = mapped_column(JSONB, nullable=False); raw_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    id: Mapped[UUID] = id_col(); source_id: Mapped[UUID] = mapped_column(ForeignKey("data_sources.id", ondelete="RESTRICT"), nullable=False); location_id: Mapped[UUID | None] = mapped_column(ForeignKey("monitoring_locations.id", ondelete="SET NULL")); issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True); valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False); valid_to: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False); variables: Mapped[dict] = mapped_column(JSONB, nullable=False); raw_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     __table_args__ = (CheckConstraint("valid_to > valid_from", name="forecast_valid_range"),)
 
 class SensorNode(Base):
     __tablename__ = "sensor_nodes"
-    id: Mapped[UUID] = id_col(); node_identifier: Mapped[str] = mapped_column(String(120), unique=True, nullable=False); name: Mapped[str] = mapped_column(String(120), nullable=False); location_id: Mapped[UUID | None] = mapped_column(ForeignKey("monitoring_locations.id", ondelete="SET NULL")); active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False); created_at: Mapped[datetime] = created_col()
-    sensors: Mapped[list[Sensor]] = relationship(back_populates="node", cascade="all, delete-orphan")
+    id: Mapped[UUID] = id_col()
+    node_identifier: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    location_id: Mapped[UUID | None] = mapped_column(ForeignKey("monitoring_locations.id", ondelete="SET NULL"))
+    dev_eui: Mapped[str | None] = mapped_column(String(32), unique=True, nullable=True)
+    join_eui: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    hardware_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    firmware_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    battery_voltage: Mapped[Decimal | None] = mapped_column(Numeric(4, 2), nullable=True)
+    last_session_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    last_f_cnt: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="active", nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = created_col()
+
+    location: Mapped[MonitoringLocation | None] = relationship()
+    sensors: Mapped[list[Sensor]] = relationship(back_populates="node", passive_deletes="all")
+    uplinks: Mapped[list[IOTUplink]] = relationship(back_populates="node", passive_deletes="all")
+
 class Sensor(Base):
     __tablename__ = "sensors"
-    id: Mapped[UUID] = id_col(); node_id: Mapped[UUID] = mapped_column(ForeignKey("sensor_nodes.id", ondelete="CASCADE"), nullable=False); sensor_identifier: Mapped[str] = mapped_column(String(120), nullable=False); kind: Mapped[SensorKind] = mapped_column(SAEnum(SensorKind, name="sensor_kind"), nullable=False); unit: Mapped[str] = mapped_column(String(40), nullable=False); calibration_version: Mapped[str | None] = mapped_column(String(80)); node: Mapped[SensorNode] = relationship(back_populates="sensors"); measurements: Mapped[list[SensorMeasurement]] = relationship(back_populates="sensor", cascade="all, delete-orphan")
+    id: Mapped[UUID] = id_col()
+    node_id: Mapped[UUID] = mapped_column(ForeignKey("sensor_nodes.id", ondelete="RESTRICT"), nullable=False)
+    sensor_identifier: Mapped[str] = mapped_column(String(120), nullable=False)
+    kind: Mapped[SensorKind] = mapped_column(SAEnum(SensorKind, name="sensor_kind"), nullable=False)
+    unit: Mapped[str] = mapped_column(String(40), nullable=False)
+    calibration_version: Mapped[str | None] = mapped_column(String(80))
+
+    node: Mapped[SensorNode] = relationship(back_populates="sensors")
+    measurements: Mapped[list[SensorMeasurement]] = relationship(back_populates="sensor", passive_deletes="all")
     __table_args__ = (UniqueConstraint("node_id", "sensor_identifier", name="uq_sensor_node_identifier"),)
+
+class IOTUplink(Base):
+    __tablename__ = "iot_uplinks"
+    id: Mapped[UUID] = id_col()
+    node_id: Mapped[UUID] = mapped_column(ForeignKey("sensor_nodes.id", ondelete="RESTRICT"), nullable=False)
+    location_id: Mapped[UUID | None] = mapped_column(ForeignKey("monitoring_locations.id", ondelete="SET NULL"), nullable=True)
+    location_name_snapshot: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    location_point = mapped_column(Geography(geometry_type="POINT", srid=4326, spatial_index=False), nullable=True)
+    provider_type: Mapped[str] = mapped_column(String(30), nullable=False, default="the_things_stack")
+    dev_eui: Mapped[str] = mapped_column(String(32), nullable=False)
+    session_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    f_cnt: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    f_port: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
+    correlation_ids: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    rssi_dbm: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    snr_db: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
+    frequency_hz: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    gateway_count: Mapped[int] = mapped_column(SmallInteger, default=1, nullable=False)
+    rx_metadata: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    sampled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    device_uptime_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    transmitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lns_received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    backend_received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ingested_at: Mapped[datetime] = created_col()
+    raw_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+    node: Mapped[SensorNode] = relationship(back_populates="uplinks")
+    measurements: Mapped[list[SensorMeasurement]] = relationship(back_populates="uplink", passive_deletes="all")
+
+    __table_args__ = (
+        UniqueConstraint("dev_eui", "session_id", "f_cnt", name="uq_iot_uplinks_dev_session_fcnt"),
+        Index("ix_iot_uplinks_node_received", "node_id", "lns_received_at"),
+        Index("ix_iot_uplinks_location_point", "location_point", postgresql_using="gist"),
+    )
+
 class SensorMeasurement(Base):
     __tablename__ = "sensor_measurements"
-    id: Mapped[UUID] = id_col(); sensor_id: Mapped[UUID] = mapped_column(ForeignKey("sensors.id", ondelete="CASCADE"), nullable=False); measured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False); received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False); value_numeric: Mapped[Decimal | None] = mapped_column(Numeric(16,6)); value_text: Mapped[str | None] = mapped_column(String(120)); quality_flag: Mapped[str | None] = mapped_column(String(40)); calibration_version: Mapped[str | None] = mapped_column(String(80)); raw_payload: Mapped[dict] = mapped_column(JSONB, nullable=False); sensor: Mapped[Sensor] = relationship(back_populates="measurements")
-    __table_args__ = (CheckConstraint("value_numeric IS NOT NULL OR value_text IS NOT NULL", name="measurement_has_value"), Index("ix_sensor_measurements_sensor_measured", "sensor_id", "measured_at"))
+    id: Mapped[UUID] = id_col()
+    sensor_id: Mapped[UUID] = mapped_column(ForeignKey("sensors.id", ondelete="RESTRICT"), nullable=False)
+    uplink_id: Mapped[UUID | None] = mapped_column(ForeignKey("iot_uplinks.id", ondelete="RESTRICT"), nullable=True)
+    measured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    value_numeric: Mapped[Decimal | None] = mapped_column(Numeric(16,6))
+    value_text: Mapped[str | None] = mapped_column(String(120))
+    raw_value_numeric: Mapped[Decimal | None] = mapped_column(Numeric(16,6), nullable=True)
+    raw_value_unit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    quality_flag: Mapped[str | None] = mapped_column(String(40))
+    calibration_version: Mapped[str | None] = mapped_column(String(80))
+    raw_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    sensor: Mapped[Sensor] = relationship(back_populates="measurements")
+    uplink: Mapped[IOTUplink | None] = relationship(back_populates="measurements")
+
+    __table_args__ = (
+        CheckConstraint("value_numeric IS NOT NULL OR value_text IS NOT NULL", name="measurement_has_value"),
+        Index("ix_sensor_measurements_sensor_received", "sensor_id", "received_at"),
+        Index("ix_sensor_measurements_uplink", "uplink_id"),
+    )
 
 class RiskAssessment(Base):
     __tablename__ = "risk_assessments"
@@ -130,6 +211,25 @@ class Alert(Base):
 class AlertEvidence(Base):
     __tablename__ = "alert_evidence"
     alert_id: Mapped[UUID] = mapped_column(ForeignKey("alerts.id", ondelete="CASCADE"), primary_key=True); evidence_type: Mapped[str] = mapped_column(String(50), primary_key=True); evidence_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True); details: Mapped[dict] = mapped_column(JSONB, nullable=False)
+class AlertRecipient(Base):
+    """The authenticated user-facing state for an operational alert.
+
+    Alerts are immutable evidence records.  The recipient row supplies ownership,
+    matching provenance, idempotency, and the user's independent read state.
+    """
+    __tablename__ = "alert_recipients"
+    alert_id: Mapped[UUID] = mapped_column(ForeignKey("alerts.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    subscription_id: Mapped[UUID | None] = mapped_column(ForeignKey("monitoring_subscriptions.id", ondelete="SET NULL"))
+    observation_id: Mapped[UUID | None] = mapped_column(ForeignKey("satellite_fire_observations.id", ondelete="SET NULL"))
+    event_id: Mapped[UUID | None] = mapped_column(ForeignKey("fire_events.id", ondelete="SET NULL"))
+    distance_m: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
+    matching_policy: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="unread")
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = created_col()
+    deduplication_key: Mapped[str] = mapped_column(String(300), nullable=False, unique=True)
+    __table_args__ = (CheckConstraint("status IN ('unread', 'read')", name="alert_recipient_status_values"), Index("ix_alert_recipients_user_created", "user_id", "created_at"))
 class NotificationPreference(Base):
     __tablename__ = "notification_preferences"
     id: Mapped[UUID] = id_col(); user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False); channel: Mapped[str] = mapped_column(String(20), nullable=False); enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False); minimum_severity: Mapped[Severity] = mapped_column(SAEnum(Severity, name="preference_severity"), nullable=False)

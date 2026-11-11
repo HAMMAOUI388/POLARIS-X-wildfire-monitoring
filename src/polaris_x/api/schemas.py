@@ -1,3 +1,4 @@
+from typing import Literal
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -69,3 +70,18 @@ class RoutePreviewRequest(BaseModel):
     destination: RoutePointRequest
     waypoints: list[RoutePointRequest] = Field(default_factory=list, max_length=5)
     profile: str = Field(default="foot", min_length=2, max_length=20)
+
+
+class CreateSubscriptionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    location_id: UUID
+    radius_m: float = Field(default=5000.0, gt=0, le=100000)
+    minimum_severity: Literal["low", "moderate", "high", "critical"] = "low"
+    enabled: bool = Field(default=True)
+
+
+class UpdateSubscriptionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    radius_m: float | None = Field(default=None, gt=0, le=100000)
+    minimum_severity: Literal["low", "moderate", "high", "critical"] | None = None
+    enabled: bool | None = None

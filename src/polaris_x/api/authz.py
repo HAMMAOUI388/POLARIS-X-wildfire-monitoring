@@ -12,6 +12,21 @@ def current_user():
         raise NoAuthorizationError("Authentication required.")
     return user
 
+def user_roles(user) -> set[str]:
+    return {role.name for role in user.roles}
+
+def has_role(user, *role_names) -> bool:
+    return bool(user_roles(user).intersection(role_names))
+
+def is_admin(user) -> bool:
+    return has_role(user, "admin")
+
+def is_authority(user) -> bool:
+    return has_role(user, "authority")
+
+def is_farm_owner(user) -> bool:
+    return has_role(user, "farm_owner")
+
 def roles_required(*allowed):
     def decorator(fn):
         @wraps(fn)
@@ -24,6 +39,7 @@ def roles_required(*allowed):
             return fn(*args, **kwargs)
         return wrapped
     return decorator
+
 
 def location_for_user(location_id, write=False):
     user = current_user(); session = db_session()

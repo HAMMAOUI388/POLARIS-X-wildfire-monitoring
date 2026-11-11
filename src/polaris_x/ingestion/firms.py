@@ -172,18 +172,299 @@ def import_csv(path: str | Path, product: str, source_name: str | None = None, s
     return result
 
 class FirmsApiAdapter:
-    def __init__(self, api_key: str | None = None):
+    """NASA FIRMS API client for live active fire data retrieval.
+
+    API endpoint format:
+    /api/area/csv/[MAP_KEY]/[SOURCE]/[AREA_COORDINATES]/[DAY_RANGE]/[DATE]
+
+    Sources: VIIRS_SNPP_NRT, VIIRS_NOAA20_NRT, VIIRS_NOAA21_NRT, MODIS_NRT, MODIS_SP
+    Area coordinates: west,south,east,north (e.g., -15,21,-1,36 for Morocco)
+    Day range: 1-10 days
+    Date: YYYY-MM-DD (optional, defaults to most recent)
+    """
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str = "https://firms.modaps.eosdis.nasa.gov",
+        timeout: float = 30.0,
+        user_agent: str = "POLARIS-X/0.1",
+    ):
         self.api_key = api_key or os.getenv("NASA_FIRMS_API_KEY")
-    def fetch(self, *args: Any, **kwargs: Any):
-        raise NotImplementedError("FIRMS API retrieval is not implemented in Phase 3; use offline CSV ingestion")
+        if not self.api_key:
+            raise ValueError("NASA_FIRMS_API_KEY is required for live API access")
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self.user_agent = user_agent
+
+    def fetch(
+        self,
+        source: str,
+        west: float,
+        south: float,
+        east: float,
+        north: float,
+        day_range: int = 1,
+        date: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch active fire data from FIRMS API.
+
+        Args:
+            source: Data source (e.g., 'VIIRS_SNPP_NRT', 'MODIS_NRT')
+            west: Western longitude boundary (-180 to 180)
+            south: Southern latitude boundary (-90 to 90)
+            east: Eastern longitude boundary (-180 to 180)
+            north: Northern latitude boundary (-90 to 90)
+            day_range: Number of days to retrieve (1-10)
+            date: Optional start date YYYY-MM-DD (defaults to most recent)
+
+        Returns:
+            List of fire detection dictionaries parsed from CSV response.
+
+        Raises:
+            ValueError: Invalid parameters
+            RuntimeError: HTTP errors, timeouts, or API errors
+        """
+        import csv as csv_module
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+        from io import StringIO
+
+        # Validate parameters
+        if not (-180 <= west <= 180) or not (-180 <= east <= 180):
+            raise ValueError("Longitude must be between -180 and 180")
+        if not (-90 <= south <= 90) or not (-90 <= north <= 90):
+            raise ValueError("Latitude must be between -90 and 90")
+        if not (1 <= day_range <= 10):
+            raise ValueError("Day range must be between 1 and 10")
+
+        # Build URL
+        area_coords = f"{west},{south},{east},{north}"
+        if date:
+            url = f"{self.base_url}/api/area/csv/{self.api_key}/{source}/{area_coords}/{day_range}/{date}"
+        else:
+            url = f"{self.base_url}/api/area/csv/{self.api_key}/{source}/{area_coords}/{day_range}"
+
+        # Execute request
+        request = urllib.request.Request(url, headers={"User-Agent": self.user_agent})
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                body = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+            if exc.code == 400:
+                raise ValueError(f"FIRMS API invalid request: {error_body}") from exc
+            elif exc.code == 401 or exc.code == 403:
+                raise ValueError("FIRMS API authentication failed: check NASA_FIRMS_API_KEY") from exc
+            elif exc.code == 429:
+                raise RuntimeError("FIRMS API rate limit exceeded: wait 10 minutes") from exc
+            else:
+                raise RuntimeError(f"FIRMS API HTTP {exc.code}: {error_body}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"FIRMS API network error: {exc.reason}") from exc
+        except TimeoutError as exc:
+            raise RuntimeError(f"FIRMS API timeout after {self.timeout}s") from exc
+
+        # Handle empty or error responses
+        if not body.strip():
+            return []
+
+        # Check for API error messages
+        if body.startswith("ERROR") or "error" in body.lower()[:100]:
+            raise RuntimeError(f"FIRMS API error: {body[:200]}")
+
+        # Parse CSV response
+        reader = csv_module.DictReader(StringIO(body))
+        if not reader.fieldnames:
+            raise RuntimeError("FIRMS API returned invalid CSV (no header)")
+
+        return list(reader)
+
+def import_api(
+    source: str,
+    west: float,
+    south: float,
+    east: float,
+    north: float,
+    day_range: int = 1,
+    date: str | None = None,
+    source_name: str | None = None,
+    session: Session | None = None,
+) -> ImportResult:
+    """Fetch and import fire data from FIRMS API.
+
+    Args:
+        source: FIRMS data source (e.g., 'VIIRS_SNPP_NRT', 'MODIS_NRT')
+        west: Western longitude boundary
+        south: Southern latitude boundary
+        east: Eastern longitude boundary
+        north: Northern latitude boundary
+        day_range: Number of days to retrieve (1-10)
+        date: Optional start date YYYY-MM-DD
+        source_name: Optional data source name override
+        session: Optional database session
+
+    Returns:
+        ImportResult with counts and run ID.
+    """
+    # Determine product name from source
+    if "VIIRS" in source.upper():
+        product = "viirs"
+    elif "MODIS" in source.upper():
+        product = "modis"
+    else:
+        raise ValueError(f"Cannot determine product from source: {source}")
+
+    # Fetch data from API
+    client = FirmsApiAdapter()
+    rows = client.fetch(
+        source=source,
+        west=west,
+        south=south,
+        east=east,
+        north=north,
+        day_range=day_range,
+        date=date,
+    )
+
+    # Prepare session
+    own_session = session is None
+    session = session or make_session_factory()()
+
+    source_name = source_name or f"NASA FIRMS {source}"
+    data_source = session.scalar(select(DataSource).where(DataSource.name == source_name))
+    if data_source is None:
+        data_source = DataSource(
+            name=source_name,
+            source_type="satellite",
+            provider="NASA FIRMS",
+            metadata_json={"product": product, "source": source},
+        )
+        session.add(data_source)
+        session.flush()
+
+    # Create ingestion run
+    run = IngestionRun(
+        source_id=data_source.id,
+        product=product,
+        source_filename=f"API:{source}:{west},{south},{east},{north}",
+        status="running",
+    )
+    session.add(run)
+    session.flush()
+
+    result = ImportResult(str(run.id))
+
+    try:
+        # Process each row from API
+        for row_number, row in enumerate(rows, start=2):  # Start at 2 to match CSV convention
+            try:
+                values = normalize_row(row, product, row_number)
+                existing = session.scalar(
+                    select(SatelliteFireObservation).where(
+                        SatelliteFireObservation.source_id == data_source.id,
+                        SatelliteFireObservation.external_id == values["external_id"],
+                    )
+                )
+
+                if existing is None:
+                    session.add(SatelliteFireObservation(source_id=data_source.id, **values))
+                    result.inserted += 1
+                else:
+                    old = {
+                        "observed_at": existing.observed_at,
+                        "published_at": existing.published_at,
+                        "confidence_original": existing.confidence_original,
+                        "brightness_temperature": existing.brightness_temperature,
+                        "frp": existing.frp,
+                        "raw_payload": existing.raw_payload,
+                    }
+                    current = {key: values[key] for key in old}
+                    if old == current:
+                        result.duplicate += 1
+                    else:
+                        for key, value in values.items():
+                            if key != "external_id":
+                                setattr(existing, key, value)
+                        result.updated += 1
+            except (ValueError, TypeError) as exc:
+                session.add(
+                    IngestionRejectedRecord(
+                        ingestion_run_id=run.id,
+                        row_number=row_number,
+                        reason_code="validation_error",
+                        reason_message=str(exc),
+                        raw_payload=dict(row),
+                    )
+                )
+                result.rejected += 1
+
+        run.status = "completed"
+    except Exception:
+        run.status = "failed"
+        session.rollback()
+        raise
+
+    run.completed_at = datetime.now(timezone.utc)
+    run.inserted_count = result.inserted
+    run.updated_count = result.updated
+    run.duplicate_count = result.duplicate
+    run.rejected_count = result.rejected
+
+    if own_session:
+        session.commit()
+        session.close()
+    else:
+        session.flush()  # Flush but don't commit if session was provided
+
+    return result
+
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Import an offline NASA FIRMS CSV")
-    parser.add_argument("--file", required=True, type=Path)
-    parser.add_argument("--product", required=True, choices=sorted(PRODUCTS))
-    parser.add_argument("--source-name")
+    parser = argparse.ArgumentParser(description="Import NASA FIRMS fire data")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # CSV import command
+    csv_parser = subparsers.add_parser("csv", help="Import from offline CSV file")
+    csv_parser.add_argument("--file", required=True, type=Path)
+    csv_parser.add_argument("--product", required=True, choices=sorted(PRODUCTS))
+    csv_parser.add_argument("--source-name")
+
+    # API import command
+    api_parser = subparsers.add_parser("api", help="Import from NASA FIRMS API")
+    api_parser.add_argument(
+        "--source",
+        required=True,
+        choices=["VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "VIIRS_NOAA21_NRT", "MODIS_NRT", "MODIS_SP"],
+        help="FIRMS data source",
+    )
+    api_parser.add_argument("--west", required=True, type=float, help="Western longitude (-180 to 180)")
+    api_parser.add_argument("--south", required=True, type=float, help="Southern latitude (-90 to 90)")
+    api_parser.add_argument("--east", required=True, type=float, help="Eastern longitude (-180 to 180)")
+    api_parser.add_argument("--north", required=True, type=float, help="Northern latitude (-90 to 90)")
+    api_parser.add_argument("--day-range", type=int, default=1, help="Number of days to retrieve (1-10, default: 1)")
+    api_parser.add_argument("--date", type=str, help="Optional start date YYYY-MM-DD (default: most recent)")
+    api_parser.add_argument("--source-name", help="Optional data source name override")
+
     args = parser.parse_args()
-    result = import_csv(args.file, args.product, args.source_name)
+
+    if args.command == "csv":
+        result = import_csv(args.file, args.product, args.source_name)
+    elif args.command == "api":
+        result = import_api(
+            source=args.source,
+            west=args.west,
+            south=args.south,
+            east=args.east,
+            north=args.north,
+            day_range=args.day_range,
+            date=args.date,
+            source_name=args.source_name,
+        )
+    else:
+        parser.error(f"Unknown command: {args.command}")
+
     print(result.as_dict())
     return 0
 

@@ -16,7 +16,7 @@ bp = Blueprint("geospatial", __name__)
 
 def _query():
     try:
-        return SpatialQueryRequest.model_validate(request.args.to_dict())
+        return SpatialQueryRequest.model_validate(request.args.to_dict()), None
     except ValidationError as exc:
         return None, error_response("validation_error", "Invalid spatial query.", 422, details=exc.errors())
 

@@ -24,7 +24,9 @@ class SpatialPolicy:
         return {"radius_m": str(self.radius_m), "temporal_window_seconds": int(self.temporal_window.total_seconds()), "version": self.version}
 
 def observations_near_location(session: Session, location: MonitoringLocation, radius_m: Decimal, start: datetime | None = None, end: datetime | None = None):
-    query = select(SatelliteFireObservation, ST_Distance(SatelliteFireObservation.point.cast(Geography), location.point.cast(Geography)).label("distance_m")).where(ST_DWithin(SatelliteFireObservation.point.cast(Geography), location.point.cast(Geography), radius_m)).order_by(SatelliteFireObservation.observed_at.desc(), SatelliteFireObservation.id).limit(1000)
+    # ``location.point`` is a loaded WKB value, not a SQL column expression;
+    # both model fields are already Geography(4326), so PostGIS needs no cast.
+    query = select(SatelliteFireObservation, ST_Distance(SatelliteFireObservation.point, location.point).label("distance_m")).where(ST_DWithin(SatelliteFireObservation.point, location.point, radius_m)).order_by(SatelliteFireObservation.observed_at.desc(), SatelliteFireObservation.id).limit(1000)
     if start is not None: query = query.where(SatelliteFireObservation.observed_at >= start)
     if end is not None: query = query.where(SatelliteFireObservation.observed_at <= end)
     return session.execute(query).all()

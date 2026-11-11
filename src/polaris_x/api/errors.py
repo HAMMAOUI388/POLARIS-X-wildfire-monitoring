@@ -12,7 +12,9 @@ def error_response(code, message, status, details=None):
 
 def register_error_handlers(app):
     @app.errorhandler(ValidationError)
-    def validation_error(error): return error_response("validation_error", "Request validation failed.", 422, error.errors())
+    def validation_error(error):
+        import json
+        return error_response("validation_error", "Request validation failed.", 422, json.loads(error.json()))
     @app.errorhandler(IntegrityError)
     def integrity_error(_error):
         from polaris_x.extensions import db_session
