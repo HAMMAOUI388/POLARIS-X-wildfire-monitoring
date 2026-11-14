@@ -202,7 +202,11 @@ export class PolarisApi {
 
   constructor(baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:5000/api/v1", options: ApiOptions = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
-    this.fetcher = options.fetcher || fetch;
+    const defaultFetcher = typeof window !== "undefined"
+      ? (input: RequestInfo | URL, init?: RequestInit) => window.fetch(input, init)
+      : (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init);
+    const chosenFetcher = options.fetcher || defaultFetcher;
+    this.fetcher = (input, init) => chosenFetcher(input, init);
     this.onUnauthorized = options.onUnauthorized;
     this.onTokensUpdated = options.onTokensUpdated;
   }
@@ -217,7 +221,13 @@ export class PolarisApi {
     if (authorized && this.accessToken) headers.set("Authorization", `Bearer ${this.accessToken}`);
     let response: Response;
     try { response = await this.fetcher(`${this.baseUrl}${path}`, { ...init, headers }); }
-    catch { throw Object.assign(new Error("Could not reach the POLARIS X server."), { code: "network_error" }) as ApiError; }
+    catch (networkErr) {
+      const userMessage = "Could not reach the POLARIS X server.";
+      if (process.env.NODE_ENV !== "production" && networkErr instanceof Error && networkErr.message !== userMessage) {
+        console.error("[PolarisApi] fetch failed:", networkErr.message, "– URL:", `${this.baseUrl}${path}`);
+      }
+      throw Object.assign(new Error(userMessage), { code: "network_error" }) as ApiError;
+    }
     if (response.status === 401 && authorized && retry && this.refreshToken) {
       try {
         const refreshResponse = await this.fetcher(`${this.baseUrl}/auth/refresh`, { method: "POST", headers: { Authorization: `Bearer ${this.refreshToken}` } });

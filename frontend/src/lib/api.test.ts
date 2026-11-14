@@ -51,6 +51,49 @@ describe("PolarisApi", () => {
     await expect(api.alert("missing")).rejects.toMatchObject({ status: 404, code: "not_found", message: "Alert not found." });
   });
 
+  it("registers a new account and returns the created user", async () => {
+    const createdUser = { id: "u-new", email: "new@example.com", display_name: "New Person", roles: ["user"] };
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ user: createdUser }), { status: 201, headers: { "Content-Type": "application/json" } })
+    );
+    const api = new PolarisApi("http://backend/api/v1", { fetcher });
+    const result = await api.register("new@example.com", "StrongPassword1234!", "New Person");
+    expect(result.user.email).toBe("new@example.com");
+    expect(result.user.roles).toEqual(["user"]);
+    expect(fetcher).toHaveBeenCalledWith(
+      "http://backend/api/v1/auth/register",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ email: "new@example.com", password: "StrongPassword1234!", display_name: "New Person" }) })
+    );
+  });
+
+  it("surfaces a 409 conflict error from duplicate-email registration", async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: { code: "conflict", message: "The request conflicts with existing data." } }), { status: 409 })
+    );
+    const api = new PolarisApi("http://backend/api/v1", { fetcher });
+    await expect(api.register("existing@example.com", "StrongPassword1234!", "Existing")).rejects.toMatchObject({
+      status: 409,
+      code: "conflict",
+      message: "The request conflicts with existing data.",
+    });
+  });
+
+  it("surfaces a 422 validation error from invalid registration input", async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: { code: "validation_error", message: "Request validation failed." } }), { status: 422 })
+    );
+    const api = new PolarisApi("http://backend/api/v1", { fetcher });
+    await expect(api.register("bad", "short", "")).rejects.toMatchObject({ status: 422, code: "validation_error" });
+  });
+
+  it("reports a network failure during registration as a stable user-facing error", async () => {
+    const api = new PolarisApi("http://backend/api/v1", { fetcher: vi.fn().mockRejectedValue(new TypeError("Failed to fetch")) as typeof fetch });
+    await expect(api.register("x@example.com", "StrongPassword1234!", "X")).rejects.toMatchObject({
+      code: "network_error",
+      message: "Could not reach the POLARIS X server.",
+    });
+  });
+
   it("refreshes an expired access token and retries the original request", async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(new Response("", { status: 401 }))

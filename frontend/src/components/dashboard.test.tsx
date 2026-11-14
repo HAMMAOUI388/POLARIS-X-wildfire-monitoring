@@ -135,6 +135,109 @@ function mockedFetch() {
 describe("Dashboard core flows", () => {
   beforeEach(() => { sessionStorage.clear(); vi.stubGlobal("fetch", mockedFetch()); });
 
+  it("registers a new account, then logs in automatically", async () => {
+    const newUser = { id: "new-1", email: "newuser@example.com", display_name: "New User", roles: ["user"] };
+    const registerFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const payload = (data: unknown, status = 200) =>
+        new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
+      if (url.endsWith("/auth/register") && init?.method === "POST") return payload({ user: newUser }, 201);
+      if (url.endsWith("/auth/login") && init?.method === "POST") return payload({ user: newUser, access_token: "new-access", refresh_token: "new-refresh" });
+      return mockedFetch()(input, init);
+    }) as typeof fetch;
+    vi.stubGlobal("fetch", registerFetch);
+
+    render(<Dashboard />);
+    // Switch to register mode
+    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    expect(await screen.findByRole("heading", { name: "Create your account" })).toBeInTheDocument();
+
+    // Fill out registration form
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "New User" } });
+    fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "newuser@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "StrongPassword1234!" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+
+    // After registration + auto-login, the dashboard should appear
+    expect(await screen.findByRole("heading", { name: "Monitoring overview" })).toBeInTheDocument();
+    expect(sessionStorage.getItem("polaris_access")).toBe("new-access");
+
+    // Verify register was called before login
+    const calls = (registerFetch as unknown as { mock: { calls: [RequestInfo | URL, RequestInit?][] } }).mock.calls.map(([reqUrl]) => String(reqUrl));
+    const registerCallIdx = calls.findIndex(reqUrl => reqUrl.endsWith("/auth/register"));
+    const loginCallIdx = calls.findIndex(reqUrl => reqUrl.endsWith("/auth/login"));
+    expect(registerCallIdx).toBeGreaterThanOrEqual(0);
+    expect(loginCallIdx).toBeGreaterThan(registerCallIdx);
+  });
+
+  it("shows a backend validation error when registration input is invalid", async () => {
+    const validationFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/auth/register") && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({ error: { code: "validation_error", message: "Password must be at least 12 characters." } }),
+          { status: 422, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return mockedFetch()(input, init);
+    }) as typeof fetch;
+    vi.stubGlobal("fetch", validationFetch);
+
+    render(<Dashboard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Create account" }));
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Test" } });
+    fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "test@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "StrongPassword1234!" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Password must be at least 12 characters.");
+    expect(screen.queryByRole("heading", { name: "Monitoring overview" })).not.toBeInTheDocument();
+  });
+
+  it("shows a conflict error when registering with an already-used email", async () => {
+    const conflictFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/auth/register") && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({ error: { code: "conflict", message: "The request conflicts with existing data." } }),
+          { status: 409, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return mockedFetch()(input, init);
+    }) as typeof fetch;
+    vi.stubGlobal("fetch", conflictFetch);
+
+    render(<Dashboard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Create account" }));
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Existing User" } });
+    fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "existing@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "StrongPassword1234!" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("The request conflicts with existing data.");
+    expect(screen.queryByRole("heading", { name: "Monitoring overview" })).not.toBeInTheDocument();
+  });
+
+  it("shows a network error when the API is unreachable during registration", async () => {
+    const networkErrorFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/auth/register")) throw new TypeError("Failed to fetch");
+      return mockedFetch()(input);
+    }) as typeof fetch;
+    vi.stubGlobal("fetch", networkErrorFetch);
+
+    render(<Dashboard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Create account" }));
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Test" } });
+    fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "test@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "StrongPassword1234!" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not reach the POLARIS X server.");
+    expect(screen.queryByRole("heading", { name: "Monitoring overview" })).not.toBeInTheDocument();
+  });
+
   it("logs in and protects data behind authentication", async () => {
     render(<Dashboard />);
     expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeInTheDocument();

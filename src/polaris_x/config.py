@@ -8,6 +8,11 @@ class Config:
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=int(os.getenv("JWT_ACCESS_TOKEN_MINUTES", "15")))
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=int(os.getenv("JWT_REFRESH_TOKEN_DAYS", "30")))
     CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()]
+    # Allow Chrome Private Network Access (PNA) preflights from non-loopback origins
+    # targeting 127.0.0.1 (e.g. Tailscale/VPN network interface → localhost API).
+    # Set to True in development when the Next.js dev server is accessible from a
+    # non-loopback interface (the browser will send the PNA preflight header).
+    CORS_ALLOW_PRIVATE_NETWORK = os.getenv("CORS_ALLOW_PRIVATE_NETWORK", "false").lower() in ("true", "1", "yes")
     NOMINATIM_URL = os.getenv("NOMINATIM_URL", "https://nominatim.openstreetmap.org")
     GEOGRAPHY_USER_AGENT = os.getenv("GEOGRAPHY_USER_AGENT", "POLARIS-X/0.1 (contact: configure-geography-user-agent)")
     GEOGRAPHY_PROVIDER_TIMEOUT = float(os.getenv("GEOGRAPHY_PROVIDER_TIMEOUT", "5"))

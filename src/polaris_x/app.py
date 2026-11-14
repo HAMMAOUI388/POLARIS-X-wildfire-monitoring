@@ -16,7 +16,12 @@ def create_app(config_object=None):
     if not app.config.get("TESTING") and (not secret or len(secret) < 32 or secret in {"change-me", "replace-with-a-long-random-secret"}):
         raise RuntimeError("JWT_SECRET_KEY must be a random value of at least 32 characters")
     init_database(app); app.teardown_appcontext(close_db); jwt.init_app(app); configure_jwt_errors()
-    if app.config.get("CORS_ORIGINS"): CORS(app, origins=app.config["CORS_ORIGINS"])
+    if app.config.get("CORS_ORIGINS"):
+        CORS(
+            app,
+            origins=app.config["CORS_ORIGINS"],
+            allow_private_network=app.config.get("CORS_ALLOW_PRIVATE_NETWORK", False),
+        )
     register_error_handlers(app)
     from polaris_x.api.auth import bp as auth_bp
     from polaris_x.api.health import bp as health_bp
